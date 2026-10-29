@@ -185,7 +185,7 @@ Target top-level blocks: `container`, `host`, `dimension`, `locals`, `variable`,
 | `provider "<name>" { url }` | REMOVE | Decoded but unused |
 | `macro "<id>" { source, files, parameters, stage }` | REMOVE | |
 | `import { source }` | REMOVE | Local reuse goes through `module` |
-| `module "<id>" { source, name, depends_on, if, for_each, lifecycle, retry, daemon, <inputs> }` | CHANGE | Keep `source` (relative, root-confined) and input attributes. REMOVE `name`, `if`, `lifecycle`, `retry`, `daemon`. `for_each`/`depends_on`: see §9. It is no longer a runnable child pipeline with its own conductor; it is inlined into the graph at plan time |
+| `module "<id>" { source, name, depends_on, if, for_each, lifecycle, retry, daemon, <inputs> }` | CHANGE | Keep `source` (relative, root-confined), input attributes and `for_each` (dimension only). REMOVE `name`, `if`, `depends_on`, `lifecycle`, `retry`, `daemon`. See §9 Q3. It is no longer a runnable child pipeline with its own conductor; it is inlined into the graph at plan time |
 | `variable "<id>" { description, depends_on, value, default, type }` | CHANGE | Keep `description`, `default`, `type`. REMOVE `depends_on`, `value`, env/prompt sourcing |
 | `locals { … }` | KEEP | |
 | `output` (`ci/output.go` constant; the `output.*` variable from `TOGOMAK_OUTPUTS`) | REMOVE | Replaced by `container.x.result.*` |
@@ -255,13 +255,16 @@ pipeline needs them; removing them later is harder.
 | `Conductor` child conductors per module | REMOVE → single evaluator, modules inlined |
 | Dependencies to drop once the code is gone: `code.gitea.io/gitea`, `hashicorp/terraform-exec`, `srevinsaju/go-getter`, `AlecAivazis/survey`, `Netflix/go-expect`, `creack/pty`, `hinshun/vt10x`, `cloud.google.com/go/logging`, `rifflock/lfshook`, `imdario/mergo`, `moby/sys/mountinfo`, `spf13/afero`, `mitchellh/go-homedir`, `hashicorp/go-envparse`, `kendru/darwin/go/depgraph` | REMOVE |
 
-### Open questions (each has a bare-bones default I'll use unless told otherwise)
+### Open questions (resolved: defaults accepted; Q3 amended)
 
 1. **`togomak fmt`**: remove. Developers can use any HCL formatter; it's not part of the interpreter.
 2. **Variable values**: `--var k=v` on the trusted CLI, plus `default`. Nothing from env, prompts or the platform config.
-3. **`module`**: a module is a namespace. It takes input attributes (its `variable`s) and contributes
-   its blocks to the one graph, which you reference as `module.x.container.y.…`. There is no
-   `for_each`, no `depends_on` and no `output` block.
+3. **`module`** (decided): a module is a namespace. It takes input attributes (its `variable`s) and
+   contributes its blocks to the one graph, which you reference as `module.x.container.y.…`. **`for_each`
+   is allowed, but only over a dimension** (`for_each = dimension.X`), the same as `host`/`container`.
+   Every block inside is then implicitly expanded over X, addressed as `module.x["k"].container.y`, and
+   the normal broadcasting rules apply. A block inside an expanded module may not expand over
+   a second dimension in v1 (plan-time error). There is no `depends_on` on a module and no `output` block.
 4. **Static `if` on containers**: drop it. Conditional work can be expressed as `for_each` over a dimension of size 0 or 1.
 5. **Migration errors**: removed constructs get a specific message where it's cheap. For example,
    "`stage` was replaced by `container`" and "`volume` is not supported". Anything else gets the
