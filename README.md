@@ -36,6 +36,7 @@ Work in progress. Today crunk can load and statically validate a pipeline:
 go run ./cmd/crunk validate --root path/to/repo
 ```
 
+- [examples/](examples/): hello world and up
 - [docs/DESIGN.md](docs/DESIGN.md): trust model, architecture, decisions
 - [docs/LANGUAGE.md](docs/LANGUAGE.md): the complete language (anything not listed is rejected)
 - [docs/INVENTORY.md](docs/INVENTORY.md): what was removed from upstream togomak, and why
