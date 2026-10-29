@@ -1,4 +1,0 @@
-title: Git
-description: |
-  Uses the `data.git` provider to clone a git repository and 
-  read contents of specific files to memory.

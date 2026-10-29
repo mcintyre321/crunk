@@ -1,0 +1,3 @@
+macro "m" {
+  source = "./elsewhere"
+}

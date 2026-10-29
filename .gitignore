@@ -1,14 +1,4 @@
-.idea/
-cmd/togomak/togomak
-cmd/togomak/*.hcl
-.togomak/pipelines/
-examples/*/.togomak/
-cmd/togomak/.togomak/
-docs/book/
-.terraform
-*.tfstate 
-*.tfstate.backup
-*.tfplan
-*.out 
-.terraform.lock.hcl
+/crunk
+/cmd/crunk/crunk
 coverage*.out
+.idea/

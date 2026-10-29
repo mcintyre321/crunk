@@ -1,0 +1,3 @@
+container "c" {
+  script = "id"
+}

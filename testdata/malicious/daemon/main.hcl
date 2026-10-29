@@ -1,0 +1,6 @@
+container "c" {
+  image = "artifactory.local/alpine:3"
+  daemon {
+    enabled = true
+  }
+}
