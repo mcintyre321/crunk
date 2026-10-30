@@ -1,15 +1,42 @@
-dimension "shard" { size = 8 }
-host "worker" { for_each = dimension.shard }
-locals { svc_host = null }
+# Exercises every construct of the language the validator knows about.
+
+variable "regions" {
+  description = "number of regional stacks"
+  type        = number
+  default     = 2
+}
+
+schema "build_result" {
+  type = object({ image_digest = string, test_projects = list(string) })
+}
+
+locals {
+  registry = "artifactory.local"
+}
+
 container "build" {
-  image  = "artifactory.local/dotnet-sdk:8"
-  mount "/src" { from = container.source.files.tree }
-  script = "cd /src && ./build.sh && ./push-image.sh > /run/result.json"
+  image         = "${local.registry}/dotnet-sdk:8"
+  result_schema = schema.build_result
+  mount "/src" {
+    from = container.source.files.tree
+    mode = "copy"
+  }
+  script = "cd /src && ./build.sh"
   files "tests" { path = "/src/out/tests" }
 }
+
+host "services" {
+  container "db" {
+    image = "${local.registry}/postgres:16"
+    env   = { POSTGRES_PASSWORD = "ci" }
+    port "pg" { container = 5432 }
+    ready { tcp = "pg" }
+  }
+}
+
 container "api" {
-  host  = local.svc_host
-  image = "artifactory.local/app@${container.build.result.image_digest}"
+  image = "${local.registry}/app@${container.build.result.image_digest}"
+  env   = { DB = container.db.address.pg }
   port "http" { container = 8080 }
   ready {
     http {
@@ -18,34 +45,59 @@ container "api" {
     }
   }
 }
-container "test" {
-  host   = host.worker
-  image  = "artifactory.local/dotnet-sdk:8"
-  mount "/tests" { from = container.build.files.tests }
-  input  = { shard = each.index, total = dimension.shard.size, xs = [for x in range(3) : x * 2] }
-  env    = { API_URL = container.api.url.http }
-  script = "/tests/run.sh ${shellescape(join(" ", ["a"]))}"
+
+parallel "project" {
+  for_each = container.build.result.test_projects
+  min      = 1
+  max      = 20
+
+  locals {
+    label = "tests-${project.key}"
+  }
+
+  host "runner" {
+    container "test" {
+      image = "${local.registry}/dotnet-sdk:8"
+      mount "/tests" { from = container.build.files.tests }
+      input = { project = project.value, index = project.index }
+      env = {
+        API_URL = container.api.url.http
+        LABEL   = local.label
+        ESCAPED = "$${HOME}"
+      }
+      script = "/tests/run.sh ${shellescape(project.value)}"
+      files "results" { path = "/results" }
+    }
+  }
+
+  parallel "retry" {
+    count = 2
+    container "flaky" {
+      image  = "${local.registry}/alpine:3"
+      env    = { N = "${project.key}-${retry.index}" }
+      script = "true"
+    }
+  }
 }
 
-variable "regions" {
-  description = "number of regional stacks"
-  type        = number
-  default     = 2
+parallel "region" {
+  count = var.regions
+  module "stack" {
+    source = "./modules/stack"
+    name   = "svc-${region.index}"
+  }
 }
 
-dimension "region" { size = var.regions }
-
-module "stack" {
-  source   = "./modules/stack"
-  for_each = dimension.region
-  name     = "svc-${each.key}"
-}
-
-container "smoke" {
-  image      = "artifactory.local/curl:8"
-  depends_on = [container.test]
+container "report" {
+  image      = "${local.registry}/trx-merge:1"
   when       = "always"
-  timeout    = "5m"
-  size       = "small"
-  script     = "curl ${module.stack[0].container.web.url.http}"
+  depends_on = [container.api, parallel.region[*].module.stack.container.web]
+  mount "/results" { from = parallel.project[*].container.test.files.results }
+  env = {
+    FIRST = parallel.project["MyApp.Api.Tests"].container.test.files.results != null ? "y" : "n"
+    WEB   = parallel.region[0].module.stack.container.web.url.http
+    PICK  = parallel.region[length(var.regions) % 2].module.stack.container.web.url.http
+    XS    = jsonencode([for i in range(3) : i * 2])
+  }
+  script = "trx-merge /results/*/*.trx"
 }

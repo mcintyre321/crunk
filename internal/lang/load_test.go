@@ -9,22 +9,29 @@ func TestLoadValidPipeline(t *testing.T) {
 	if diags.HasErrors() {
 		t.Fatal(diags.Error())
 	}
-	m := p.Module
-	if got := len(m.Containers); got != 4 {
-		t.Errorf("containers: got %d, want 4", got)
+	root := p.Module.Root
+	if got := len(root.Containers); got != 4 {
+		t.Errorf("top-level containers: got %d, want 4 (build, db, api, report)", got)
 	}
-	if len(m.Hosts) != 1 || len(m.Dimensions) != 2 || len(m.Variables) != 1 || len(m.Locals) != 1 {
-		t.Errorf("unexpected block counts: hosts=%d dimensions=%d variables=%d locals=%d",
-			len(m.Hosts), len(m.Dimensions), len(m.Variables), len(m.Locals))
+	if db := root.container("db"); db == nil || db.Host == nil || db.Host.Labels[0] != "services" {
+		t.Errorf("db should be in scope at the top level and placed on host services")
 	}
-	if len(m.Calls) != 1 || m.Calls[0].Module == nil {
-		t.Fatalf("module call not loaded")
+	project := root.parallel("project")
+	if project == nil {
+		t.Fatal("parallel project missing")
 	}
-	if got := m.Calls[0].Module.Dir; got != "modules/stack" {
-		t.Errorf("module dir: got %q", got)
+	if test := project.container("test"); test == nil || test.Host == nil || test.Host.Labels[0] != "runner" {
+		t.Errorf("test should be in project's scope and placed on host runner")
 	}
-	if got := len(m.Calls[0].Module.Containers); got != 2 {
-		t.Errorf("module containers: got %d, want 2", got)
+	if project.parallel("retry") == nil || len(project.Locals) != 1 {
+		t.Errorf("nested parallel or scoped local missing")
+	}
+	calls := p.Module.AllCalls()
+	if len(calls) != 1 || calls[0].Module == nil || calls[0].Module.Dir != "modules/stack" {
+		t.Fatalf("module call not loaded: %+v", calls)
+	}
+	if calls[0].Scope != root.parallel("region") {
+		t.Errorf("module call should belong to the region scope")
 	}
 }
 
@@ -34,6 +41,45 @@ func TestDuplicateNamesAcrossFiles(t *testing.T) {
 	write(t, root+"/b.hcl", `container "x" { image = "a/b" }`)
 	_, diags := Load(root, ".", DefaultLimits())
 	requireError(t, diags, `container "x" is declared more than once`)
+}
+
+func TestSameNameInDifferentScopes(t *testing.T) {
+	root := t.TempDir()
+	write(t, root+"/main.hcl", `
+container "x" { image = "a/b" }
+parallel "p" {
+  count = 2
+  container "x" {
+    image = "a/b"
+    env   = { N = tostring(p.index) }
+  }
+}`)
+	if _, diags := Load(root, ".", DefaultLimits()); diags.HasErrors() {
+		t.Fatal(diags.Error())
+	}
+}
+
+func TestInnerScopeShadowsOuter(t *testing.T) {
+	root := t.TempDir()
+	// Inside p, container.x is p's own x, which has port "inner" but not "outer".
+	write(t, root+"/main.hcl", `
+container "x" {
+  image = "a/b"
+  port "outer" { container = 1 }
+}
+parallel "p" {
+  count = 2
+  container "x" {
+    image = "a/b"
+    port "inner" { container = 1 }
+  }
+  container "y" {
+    image = "a/b"
+    env   = { U = container.x.url.outer }
+  }
+}`)
+	_, diags := Load(root, ".", DefaultLimits())
+	requireError(t, diags, `container "x" has no port named "outer"`)
 }
 
 func TestForExpressionIteratorsAreInScope(t *testing.T) {
@@ -69,4 +115,13 @@ func TestShellInterpolationNeedsEscaping(t *testing.T) {
 		t.Fatalf("want one error for the unescaped ${HOME}, got:\n%s", diags.Error())
 	}
 	requireError(t, diags, "escape it as $${...}")
+}
+
+func TestVariableDefaultsAreConstant(t *testing.T) {
+	root := t.TempDir()
+	write(t, root+"/main.hcl", `
+variable "a" { default = 1 }
+variable "b" { default = var.a }`)
+	_, diags := Load(root, ".", DefaultLimits())
+	requireError(t, diags, "variable defaults must be constant")
 }

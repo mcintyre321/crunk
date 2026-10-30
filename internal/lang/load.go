@@ -2,8 +2,9 @@
 //
 // Everything read here is untrusted: file names, file contents and module
 // sources. Load never evaluates expressions; it checks structure, the
-// vocabulary (blocks, arguments, functions, variable roots) and resource
-// limits, so that a rejected pipeline fails before anything is dispatched.
+// vocabulary (blocks, arguments, functions), scopes and references, and
+// resource limits, so that a rejected pipeline fails before anything is
+// dispatched.
 package lang
 
 import (
@@ -15,9 +16,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/ext/typeexpr"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/zclconf/go-cty/cty"
 )
 
 // Limits bound the work Load will do on untrusted input.
@@ -46,50 +45,6 @@ type Pipeline struct {
 	Files  map[string]*hcl.File // by root-relative name, for diagnostics
 }
 
-// Module is one directory of .hcl files.
-type Module struct {
-	Dir        string // root-relative, slash-separated; "." for the root module
-	Containers []*hclsyntax.Block
-	Hosts      []*hclsyntax.Block
-	Dimensions []*hclsyntax.Block
-	Variables  []*hclsyntax.Block
-	Locals     []*hclsyntax.Attribute
-	Calls      []*ModuleCall
-}
-
-// ModuleCall is a `module` block together with the module it loads.
-type ModuleCall struct {
-	Block  *hclsyntax.Block
-	Source string
-	Module *Module
-}
-
-// BuiltinContainers are container names provided by the platform.
-var BuiltinContainers = map[string]bool{"source": true}
-
-// allowedRoots are the only names an expression may start with.
-var allowedRoots = map[string]bool{
-	"var": true, "local": true, "container": true, "host": true,
-	"dimension": true, "each": true, "module": true,
-}
-
-var removedRoots = map[string]string{
-	"path":     "host paths are not visible to pipelines",
-	"cwd":      "host paths are not visible to pipelines",
-	"owd":      "host paths are not visible to pipelines",
-	"hostname": "the host is not visible to pipelines",
-	"hostuser": "the host is not visible to pipelines",
-	"env":      "the host environment is not visible to pipelines; pass values with variables",
-	"pipeline": "pipeline metadata is not available",
-	"data":     "data sources are not supported",
-	"stage":    "`stage` was replaced by `container`",
-	"macro":    "macros are not supported",
-	"param":    "macros are not supported",
-	"this":     "`this` is not supported",
-	"output":   "outputs are not supported; read `container.<name>.result`",
-	"ansi":     "`ansi` is not supported",
-}
-
 // Load reads the root module in dir (relative to root) and every module it
 // calls. Module sources must be relative paths that resolve, after following
 // symlinks, to directories inside root.
@@ -109,6 +64,11 @@ func Load(root, dir string, limits Limits) (*Pipeline, hcl.Diagnostics) {
 	}
 	mod, d := l.loadModule(start, 0, nil)
 	diags = diags.Extend(d)
+	if mod != nil && !diags.HasErrors() {
+		// References are checked once every module is loaded, because a
+		// reference can reach into a called module.
+		diags = diags.Extend(checkModuleRefs(mod))
+	}
 	return &Pipeline{Root: realRoot, Module: mod, Files: l.files}, diags
 }
 
@@ -172,7 +132,7 @@ func (l *loader) loadModule(dir string, depth int, subject *hcl.Range) (*Module,
 	if err != nil {
 		return nil, errorf(subject, "Cannot read module", "%s: %s", l.rel(dir), err)
 	}
-	mod := &Module{Dir: l.rel(dir)}
+	mod := &Module{Dir: l.rel(dir), Root: &Scope{}}
 	count := 0
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".hcl") {
@@ -199,7 +159,7 @@ func (l *loader) loadModule(dir string, depth int, subject *hcl.Range) (*Module,
 	if diags.HasErrors() {
 		return mod, diags
 	}
-	for _, call := range mod.Calls {
+	for _, call := range mod.AllCalls() {
 		r := call.Block.Body.Attributes["source"].Expr.Range()
 		childDir, d := l.resolve(dir, call.Source, &r)
 		diags = diags.Extend(d)
@@ -251,131 +211,6 @@ func (l *loader) readFile(path string) (*hclsyntax.Body, hcl.Diagnostics) {
 		return nil, errorf(nil, "File nested too deeply", "%s has nesting depth %d; the limit is %d", name, depth, l.limits.MaxNestingDepth)
 	}
 	return body, nil
-}
-
-// collect checks one file's top-level body against the schema and adds its blocks to mod.
-func collect(mod *Module, body *hclsyntax.Body) hcl.Diagnostics {
-	diags := checkBody(body, topSchema)
-	for _, b := range body.Blocks {
-		if _, ok := topSchema.blocks[b.Type]; !ok || len(b.Labels) != len(topSchema.blocks[b.Type].labels) {
-			continue
-		}
-		switch b.Type {
-		case "container":
-			mod.Containers = append(mod.Containers, b)
-			diags = diags.Extend(checkContainer(b))
-			diags = diags.Extend(checkExprs(b.Body))
-		case "host":
-			mod.Hosts = append(mod.Hosts, b)
-			diags = diags.Extend(checkExprs(b.Body))
-		case "dimension":
-			mod.Dimensions = append(mod.Dimensions, b)
-			diags = diags.Extend(checkExprs(b.Body))
-		case "locals":
-			for _, a := range sortedAttrs(b.Body) {
-				mod.Locals = append(mod.Locals, a)
-				diags = diags.Extend(checkExpr(a.Expr))
-			}
-		case "variable":
-			mod.Variables = append(mod.Variables, b)
-			for _, a := range sortedAttrs(b.Body) {
-				if a.Name == "type" {
-					_, d := typeexpr.TypeConstraint(a.Expr)
-					diags = diags.Extend(d)
-				} else {
-					diags = diags.Extend(checkExpr(a.Expr))
-				}
-			}
-		case "module":
-			call, d := moduleCall(b)
-			diags = diags.Extend(d)
-			if call != nil {
-				mod.Calls = append(mod.Calls, call)
-			}
-		}
-	}
-	return diags
-}
-
-func moduleCall(b *hclsyntax.Block) (*ModuleCall, hcl.Diagnostics) {
-	var diags hcl.Diagnostics
-	for _, a := range sortedAttrs(b.Body) {
-		if a.Name != "source" {
-			diags = diags.Extend(checkExpr(a.Expr))
-		}
-	}
-	attr, ok := b.Body.Attributes["source"]
-	if !ok {
-		return nil, diags // reported by checkBody
-	}
-	r := attr.Expr.Range()
-	v, d := attr.Expr.Value(nil)
-	if d.HasErrors() || v.Type() != cty.String || v.IsNull() {
-		return nil, diags.Extend(errorf(&r, "Invalid module source", "source must be a literal string"))
-	}
-	src := v.AsString()
-	if !strings.HasPrefix(src, "./") && !strings.HasPrefix(src, "../") {
-		return nil, diags.Extend(errorf(&r, "Invalid module source",
-			"%q is not a local path; module sources must start with ./ or ../ (remote sources such as git, https, s3 and gcs are not supported)", src))
-	}
-	return &ModuleCall{Block: b, Source: src}, diags
-}
-
-func checkContainer(b *hclsyntax.Block) hcl.Diagnostics {
-	var diags hcl.Diagnostics
-	name := b.Labels[0]
-	if BuiltinContainers[name] {
-		diags = diags.Extend(errorf(b.LabelRanges[0].Ptr(), "Reserved container name", "%q is a built-in container", name))
-	}
-	seen := map[string]bool{}
-	for _, inner := range b.Body.Blocks {
-		if len(inner.Labels) == 1 {
-			key := inner.Type + "." + inner.Labels[0]
-			if seen[key] {
-				diags = diags.Extend(errorf(inner.LabelRanges[0].Ptr(), "Duplicate block", "%s %q is declared more than once", inner.Type, inner.Labels[0]))
-			}
-			seen[key] = true
-		}
-		if inner.Type == "ready" {
-			_, tcp := inner.Body.Attributes["tcp"]
-			http := len(inner.Body.Blocks) > 0
-			if tcp == http {
-				diags = diags.Extend(errorf(inner.DefRange().Ptr(), "Invalid ready probe", "`ready` needs exactly one of `tcp` or an `http` block"))
-			}
-		}
-	}
-	return diags
-}
-
-// checkNames reports invalid and duplicate block names within one module.
-func checkNames(mod *Module) hcl.Diagnostics {
-	var diags hcl.Diagnostics
-	seen := map[string]bool{}
-	add := func(kind, name string, r hcl.Range) {
-		if !hclsyntax.ValidIdentifier(name) {
-			diags = diags.Extend(errorf(&r, "Invalid name", "%q is not a valid identifier", name))
-		}
-		key := kind + "." + name
-		if seen[key] {
-			diags = diags.Extend(errorf(&r, "Duplicate name", "%s %q is declared more than once", kind, name))
-		}
-		seen[key] = true
-	}
-	for _, group := range []struct {
-		kind   string
-		blocks []*hclsyntax.Block
-	}{{"container", mod.Containers}, {"host", mod.Hosts}, {"dimension", mod.Dimensions}, {"variable", mod.Variables}} {
-		for _, b := range group.blocks {
-			add(group.kind, b.Labels[0], b.LabelRanges[0])
-		}
-	}
-	for _, c := range mod.Calls {
-		add("module", c.Block.Labels[0], c.Block.LabelRanges[0])
-	}
-	for _, a := range mod.Locals {
-		add("local", a.Name, a.NameRange)
-	}
-	return diags
 }
 
 // checkBody checks arguments and blocks against s, recursively.
@@ -433,79 +268,6 @@ func blockHint(name string, bs *blockSchema) string {
 		h += fmt.Sprintf(" \"<%s>\"", l)
 	}
 	return h + " { ... }"
-}
-
-// checkExprs checks every expression in a block body.
-func checkExprs(body *hclsyntax.Body) hcl.Diagnostics {
-	var diags hcl.Diagnostics
-	for _, a := range sortedAttrs(body) {
-		diags = diags.Extend(checkExpr(a.Expr))
-	}
-	for _, b := range body.Blocks {
-		diags = diags.Extend(checkExprs(b.Body))
-	}
-	return diags
-}
-
-// checkExpr rejects calls to functions outside the allowlist and references
-// to variable roots outside the language.
-func checkExpr(expr hclsyntax.Expression) hcl.Diagnostics {
-	c := &exprChecker{}
-	hclsyntax.Walk(expr, c)
-	return c.diags
-}
-
-type exprChecker struct {
-	diags  hcl.Diagnostics
-	scopes []map[string]bool
-}
-
-func (c *exprChecker) Enter(n hclsyntax.Node) hcl.Diagnostics {
-	switch e := n.(type) {
-	case *hclsyntax.FunctionCallExpr:
-		if _, ok := Functions[e.Name]; !ok {
-			r := e.NameRange
-			detail := fmt.Sprintf("there is no function named `%s`", e.Name)
-			if why, ok := removedFunctions[e.Name]; ok {
-				detail = why
-			}
-			c.diags = c.diags.Extend(errorf(&r, "Unsupported function", "%s", detail))
-		}
-	case *hclsyntax.ForExpr:
-		scope := map[string]bool{e.ValVar: true}
-		if e.KeyVar != "" {
-			scope[e.KeyVar] = true
-		}
-		c.scopes = append(c.scopes, scope)
-	case *hclsyntax.ScopeTraversalExpr:
-		root := e.Traversal.RootName()
-		if allowedRoots[root] || c.inScope(root) {
-			break
-		}
-		r := e.Traversal[0].SourceRange()
-		detail := fmt.Sprintf("`%s` is not a known name; expressions can refer to var, local, container, host, dimension, each and module (to write a literal ${...} in a string, such as a shell variable, escape it as $${...})", root)
-		if why, ok := removedRoots[root]; ok {
-			detail = why
-		}
-		c.diags = c.diags.Extend(errorf(&r, "Unknown reference", "%s", detail))
-	}
-	return nil
-}
-
-func (c *exprChecker) Exit(n hclsyntax.Node) hcl.Diagnostics {
-	if _, ok := n.(*hclsyntax.ForExpr); ok {
-		c.scopes = c.scopes[:len(c.scopes)-1]
-	}
-	return nil
-}
-
-func (c *exprChecker) inScope(name string) bool {
-	for _, s := range c.scopes {
-		if s[name] {
-			return true
-		}
-	}
-	return false
 }
 
 type depthWalker struct{ depth, max int }

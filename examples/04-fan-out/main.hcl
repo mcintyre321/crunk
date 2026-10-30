@@ -1,20 +1,17 @@
-# Fan out over a dimension.
+# Fan out with a parallel block.
 #
-# Each `say` instance runs on its own logical host (host.worker is expanded over
-# dimension.greeting), so `say` is expanded too. each.index is 0..2 and
-# each.key is "0".."2".
+# Everything inside `parallel "greeting"` is repeated once per element of
+# for_each. The host block gives each repetition its own logical host.
+# greeting.index is 0..2, greeting.key and greeting.value are the words.
 
-locals {
-  greetings = ["Hello", "Bonjour", "Hola"]
-}
+parallel "greeting" {
+  for_each = ["Hello", "Bonjour", "Hola"]
 
-dimension "greeting" { size = length(local.greetings) }
-
-host "worker" { for_each = dimension.greeting }
-
-container "say" {
-  host   = host.worker
-  image  = "docker.io/library/alpine:3.20"
-  input  = { word = local.greetings[each.index] }
-  script = "cat /run/input.json"
+  host "worker" {
+    container "say" {
+      image  = "docker.io/library/alpine:3.20"
+      input  = { word = greeting.value, position = greeting.index }
+      script = "cat /run/input.json"
+    }
+  }
 }

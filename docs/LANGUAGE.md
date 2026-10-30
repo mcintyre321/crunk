@@ -3,9 +3,10 @@
 This is the complete vocabulary. **Anything not listed here is rejected** when the pipeline
 is loaded, before anything runs.
 
-> **Status.** This document is the locked target design. The validator in `internal/lang`
-> still implements the earlier draft (`dimension`, `for_each`, `host =`). The redesign lands
-> next. Functions marked *planned* below are not implemented yet.
+> **Status.** `crunk validate` checks everything in this document statically: blocks,
+> arguments, nesting, scopes, references and functions. Values (types, bounds, schemas,
+> expansion) are checked by the evaluator, which comes next. Functions marked *planned* are
+> not implemented yet.
 
 ## Principles
 
@@ -90,6 +91,10 @@ The platform caps the number of keys.
 A logical isolation unit with its own network and filesystem namespace. Everything inside it
 runs there. Inside a `parallel` block there is one host per iteration. A host has no arguments.
 
+A `host` block decides **placement only; it is not a naming scope**. Its containers, modules and
+locals belong to the enclosing scope, so a container inside `host "services"` at the top level
+is still `container.<name>` from anywhere at the top level.
+
 ### `module "<name>"`
 
 | Argument | Required | Meaning |
@@ -101,7 +106,7 @@ To repeat a module, put the `module` block inside `parallel`.
 
 ### `locals`
 
-Any number of `name = expression` arguments, scoped to the enclosing block.
+Any number of `name = expression` arguments, scoped to the enclosing `parallel` block or module.
 
 ### `variable "<name>"`
 
@@ -139,8 +144,25 @@ Schemas are used by `conform()` and `result_schema`.
 | `module.<name>.container.<x>` | A container inside a module |
 | `schema.<name>` | A schema |
 
-Name resolution goes from the innermost scope outwards. A reference to a block that is
-repeated in a scope you are not inside needs an index or `[*]`; leaving it out is an error.
+Only `parallel` blocks and modules create naming scopes. Name resolution goes from the
+innermost scope outwards, so an inner name hides an outer one with the same name. Names must
+be unique within a scope, and a `parallel` block may not reuse the name of a `parallel` block
+that encloses it.
+
+Rules the validator enforces:
+
+- A reference into a `parallel` block you are not inside needs `[<key>]` or `[*]`.
+- A container reference must continue with `.url.<port>`, `.address.<port>`, `.files.<name>`
+  or `.result...`, and the port or `files` name must be declared. The exception is
+  `depends_on`, whose entries are bare container references (including `[*]` ones).
+- `mount.from` must be a `files` output, or `subdir(...)` of one.
+- `result_schema` must be `schema.<name>`.
+- Variable defaults and descriptions may not refer to anything.
+- `count`, `for_each`, `min` and `max` are evaluated in the scope *around* the `parallel`
+  block, so they cannot use the block's own `<name>.index`.
+- `<name>.value` is only available when the block uses `for_each`.
+- Names that are used as expression roots (`var`, `local`, `container`, `parallel`, `module`,
+  `schema`, `host`, `each`, `self`, `count`) cannot name a `parallel` block.
 
 Iterator names introduced by `for` expressions are also in scope inside them. Inside strings,
 `${...}` is interpolation; write `$${...}` for a literal `${...}`, such as a shell variable.

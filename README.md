@@ -3,34 +3,39 @@
 A trusted interpreter for untrusted CI pipelines, written in HCL.
 
 Pipelines are built from one primitive, the **container**. Containers are placed on logical
-**hosts**, fanned out over **dimensions**, and connected by **bindings** (network ports,
+**hosts**, repeated by **parallel** blocks, and connected by **bindings** (network ports,
 file snapshots, JSON results). The interpreter evaluates the pipeline into a graph of
 closed container specs and dispatches them to Docker endpoints. It never runs pipeline
 code itself.
 
 ```hcl
-dimension "shard" { size = 8 }
-host "worker" { for_each = dimension.shard }
-
 container "build" {
-  image  = "artifactory.local/dotnet-sdk:8"
-  mount "/src" { from = container.source.files.tree }
-  script = "cd /src && ./build.sh"
-  files "tests" { path = "/src/out/tests" }
+  image  = "mcr.microsoft.com/dotnet/sdk:8.0"
+  mount "/src" {
+    from = container.source.files.tree
+    mode = "copy"
+  }
+  script = "cd /src && dotnet build -c Release && cp -r tests/bin/Release/net8.0/. /out/tests/"
+  files "tests" { path = "/out/tests" }
 }
 
-container "test" {
-  host   = host.worker
-  image  = "artifactory.local/dotnet-sdk:8"
-  mount "/tests" { from = container.build.files.tests }
-  input  = { shard = each.index, total = dimension.shard.size }
-  script = "/tests/run.sh"
+parallel "shard" {
+  count = 4
+
+  host "runner" {                       # one host per shard
+    container "test" {
+      image  = "mcr.microsoft.com/dotnet/sdk:8.0"
+      mount "/tests" { from = container.build.files.tests }
+      env    = { SHARD = tostring(shard.index) }
+      script = "/tests/run-shard.sh"
+    }
+  }
 }
 ```
 
 ## Status
 
-Work in progress. The design is locked (see below); today crunk can load and statically validate a pipeline in the earlier draft syntax:
+Work in progress. Today crunk can load and statically validate a pipeline:
 
 ```
 go run ./cmd/crunk validate --root path/to/repo

@@ -1,9 +1,10 @@
-# Reuse a local module, once per key of a dimension.
+# Reuse a local module, once per iteration of a parallel block.
 
-dimension "lang" { size = 2 }
+parallel "lang" {
+  for_each = ["Hello", "Hallo"]
 
-module "greeter" {
-  source   = "./modules/greeter"
-  for_each = dimension.lang
-  greeting = ["Hello", "Hallo"][each.index]
+  module "greeter" {
+    source   = "./modules/greeter"
+    greeting = lang.value
+  }
 }

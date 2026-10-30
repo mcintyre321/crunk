@@ -135,6 +135,20 @@ always sound.
   extraction rejects absolute paths, `..`, links that escape the root and device files, and
   enforces size and count limits.
 
+## Code layout
+
+```
+cmd/crunk          CLI: `crunk validate --root <repo> [--dir <pipeline dir>]`
+internal/lang      Loading and static validation of pipeline HCL
+  load.go          root-confined module loader, limits, structural checks
+  schema.go        the vocabulary: blocks, arguments, nesting, removed-construct messages
+  scope.go         the scope tree (modules, parallel blocks, hosts) and name checks
+  refs.go          reference resolution against scopes; function allowlist
+  funcs.go         the pure function table
+examples/          small pipelines, each checked by a test
+testdata/          malicious corpus (must be rejected) and a valid pipeline that uses everything
+```
+
 ## Differences from Terraform
 
 | | Terraform | crunk |
@@ -169,7 +183,7 @@ Borrowed files: none so far.
 ## Roadmap
 
 1. **Done:** strip upstream; root-confined loader; static validation; malicious corpus.
-2. **Language redesign in the validator:**
+2. **Done: language redesign in the validator:**
    - nested `parallel`/`host` blocks and scope resolution
    - `schema`
    - `[*]` references

@@ -13,6 +13,5 @@ that point outside the checkout or very large or deep inputs:
 - deeply nested expression
 - modules nested beyond the depth limit
 
-Cases that need evaluation or the platform config (non-allowlisted image registry,
-dimension size over the cap, `mount.from` that is not a `files` output) are added in
-Phase 2.
+Cases that need evaluation or the platform config (non-allowlisted image registry, a
+`parallel` count over the cap, keys with unsafe characters) are added with the evaluator.
