@@ -105,7 +105,6 @@ var topSchema = &schema{
 		"import":   "`import` is not supported; use a local `module`",
 		"pre":      msgHooks,
 		"post":     msgHooks,
-		"togomak":  "the `togomak` block is no longer needed; remove it",
 		"provider": "providers are not supported",
 		"output":   "outputs are not supported; containers expose `result`, `files`, `url` and `address`",
 	},

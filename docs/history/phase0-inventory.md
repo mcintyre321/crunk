@@ -1,4 +1,8 @@
-# Phase 0 inventory
+# Phase 0 inventory (historical)
+
+> This is the audit of the upstream codebase taken before Phase 1 deleted it. None of the code
+> it describes remains. Language decisions here are superseded by `docs/LANGUAGE.md` and
+> `docs/DESIGN.md`.
 
 This is a snapshot of the upstream togomak fork at `54334bd` (module `github.com/srevinsaju/togomak/v1`),
 taken before any trust-model changes. Every capability below is something the

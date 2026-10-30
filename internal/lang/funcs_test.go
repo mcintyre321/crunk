@@ -88,7 +88,7 @@ func TestFunctionsHandleUnknowns(t *testing.T) {
 	}
 }
 
-// LANGUAGE.md is the allowlist: its function table must match Functions exactly.
+// LANGUAGE.md is the allowlist: its implemented-function table must match Functions exactly.
 func TestLanguageDocListsFunctions(t *testing.T) {
 	doc, err := os.ReadFile("../../docs/LANGUAGE.md")
 	if err != nil {
@@ -100,8 +100,11 @@ func TestLanguageDocListsFunctions(t *testing.T) {
 		t.Fatal("LANGUAGE.md has no Functions section")
 	}
 	section = section[start:]
-	if end := strings.Index(section[3:], "\n## "); end >= 0 {
-		section = section[:end+3]
+	// Stop at the next top-level section, or at the planned (not yet implemented) list.
+	for _, marker := range []string{"\n## ", "\n### Planned"} {
+		if end := strings.Index(section[3:], marker); end >= 0 {
+			section = section[:end+3]
+		}
 	}
 	var documented []string
 	row := regexp.MustCompile("(?m)^\\| ([^|]+) \\|")

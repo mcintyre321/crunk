@@ -30,7 +30,7 @@ container "test" {
 
 ## Status
 
-Work in progress. Today crunk can load and statically validate a pipeline:
+Work in progress. The design is locked (see below); today crunk can load and statically validate a pipeline in the earlier draft syntax:
 
 ```
 go run ./cmd/crunk validate --root path/to/repo
@@ -39,8 +39,7 @@ go run ./cmd/crunk validate --root path/to/repo
 - [examples/](examples/): hello world and up
 - [docs/DESIGN.md](docs/DESIGN.md): trust model, architecture, decisions
 - [docs/LANGUAGE.md](docs/LANGUAGE.md): the complete language (anything not listed is rejected)
-- [docs/INVENTORY.md](docs/INVENTORY.md): what was removed from upstream togomak, and why
 
 ## Licence
 
-MPL-2.0. Forked from [togomak](https://github.com/srevinsaju/togomak) by Srevin Saju.
+See [LICENSE](LICENSE) and the provenance notes in [docs/DESIGN.md](docs/DESIGN.md#code-provenance-and-licensing).

@@ -81,7 +81,6 @@ var removedRoots = map[string]string{
 	"hostuser": "the host is not visible to pipelines",
 	"env":      "the host environment is not visible to pipelines; pass values with variables",
 	"pipeline": "pipeline metadata is not available",
-	"togomak":  "interpreter metadata is not available",
 	"data":     "data sources are not supported",
 	"stage":    "`stage` was replaced by `container`",
 	"macro":    "macros are not supported",
