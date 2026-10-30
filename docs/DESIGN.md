@@ -153,6 +153,8 @@ always sound.
 
 ## Code provenance and licensing
 
+crunk is licensed under **MPL-2.0** (see `LICENSE`).
+
 - **All code in this repository is original to crunk.** The project began as a fork of
   togomak; Phase 1 deleted all of togomak's code, and nothing from it is reused.
 - **Libraries:** `github.com/hashicorp/hcl/v2` (MPL-2.0) and `github.com/zclconf/go-cty`
