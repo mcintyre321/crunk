@@ -33,26 +33,54 @@ var readySchema = &schema{
 	},
 }
 
-var containerSchema = &schema{
+var scriptSchema = &schema{
 	attrs: map[string]bool{
-		"image":         true,
-		"script":        false,
+		"run":           true,
+		"stdin":         false,
 		"env":           false,
-		"input":         false,
-		"result_schema": false,
-		"size":          false,
-		"timeout":       false,
+		"output":        false,
 		"when":          false,
 		"allow_failure": false,
 		"depends_on":    false,
 	},
+	removed: map[string]string{
+		"script": "a script's command is `run`",
+		"input":  msgInput,
+		"shell":  "the script is always run by the platform's fixed shell",
+	},
+}
+
+const (
+	msgInput  = "use `stdin`, for example `stdin = jsonencode({ ... })`"
+	msgResult = "scripts output on stdout: read `script.<name>.stdout`, or parse it once with `output = self.stdout.jsondecode()`"
+)
+
+var containerSchema = &schema{
+	attrs: map[string]bool{
+		"image":           true,
+		"script":          false, // shorthand for script "main" { run = ... }
+		"stdin":           false, // with the shorthand
+		"output":          false, // with the shorthand
+		"env":             false,
+		"size":            false,
+		"timeout":         false,
+		"when":            false,
+		"allow_failure":   false,
+		"depends_on":      false,
+		"max_concurrency": false,
+	},
 	blocks: map[string]*blockSchema{
-		"port":  {labels: []string{"name"}, body: portSchema},
-		"ready": {max: 1, body: readySchema},
-		"files": {labels: []string{"name"}, body: &schema{attrs: map[string]bool{"path": true}}},
-		"mount": {labels: []string{"path"}, body: &schema{attrs: map[string]bool{"from": true, "mode": false}}},
+		"script": {labels: []string{"name"}, body: scriptSchema},
+		"port":   {labels: []string{"name"}, body: portSchema},
+		"ready":  {max: 1, body: readySchema},
+		"files":  {labels: []string{"name"}, body: &schema{attrs: map[string]bool{"path": true}}},
+		"mount":  {labels: []string{"path"}, body: &schema{attrs: map[string]bool{"from": true, "mode": false}}},
 	},
 	removed: map[string]string{
+		"input":          msgInput,
+		"result_schema":  "use `output = conform(self.stdout.jsondecode(), schema.<name>)`",
+		"result":         msgResult,
+		"step":           "steps are `script` blocks",
 		"host":           msgPlacement,
 		"for_each":       msgRepeat,
 		"count":          msgRepeat,
@@ -70,7 +98,6 @@ var containerSchema = &schema{
 		"devices":        msgPlatform,
 		"security_opt":   msgPlatform,
 		"workdir":        msgPlatform,
-		"stdin":          "containers cannot read from the terminal",
 		"shell":          "the script is always run by the platform's fixed shell",
 		"args":           "use `script`, or omit it to run the image's default command",
 		"command":        "use `script`, or omit it to run the image's default command",

@@ -6,8 +6,8 @@ variable "regions" {
   default     = 2
 }
 
-schema "build_result" {
-  type = object({ image_digest = string, test_projects = list(string) })
+schema "dotnet_info" {
+  type = object({ sdk = object({ version = string }) })
 }
 
 locals {
@@ -15,14 +15,52 @@ locals {
 }
 
 container "build" {
-  image         = "${local.registry}/dotnet-sdk:8"
-  result_schema = schema.build_result
+  image           = "${local.registry}/dotnet-sdk:8"
+  max_concurrency = 2
   mount "/src" {
     from = container.source.files.tree
     mode = "copy"
   }
-  script = "cd /src && ./build.sh"
+
+  script "restore" {
+    run = "cd /src && dotnet restore"
+  }
+
+  script "compile" {
+    depends_on = [script.restore]
+    run        = "cd /src && dotnet build --no-restore -c Release > /dev/null"
+  }
+
+  script "image" {
+    depends_on = [script.compile]
+    run        = "cat /src/out/image-digest"
+  }
+
+  script "projects" {
+    depends_on = [script.compile]
+    run        = "ls /src/out/tests"
+    output     = self.stdout.lines()
+  }
+
+  script "info" {
+    run    = "dotnet --info --format json"
+    output = self.stdout.jsondecode()
+  }
+
+  script "summary" {
+    when  = "always"
+    stdin = jsonencode({ projects = script.projects.output, sdk = script.info.output.sdk.version })
+    run   = "jq ."
+  }
+
   files "tests" { path = "/src/out/tests" }
+}
+
+container "version" {
+  image  = "${local.registry}/git:2"
+  mount "/src" { from = container.source.files.tree }
+  script = "cd /src && git describe --tags"
+  output = self.stdout.trimspace()
 }
 
 host "services" {
@@ -35,7 +73,7 @@ host "services" {
 }
 
 container "api" {
-  image = "${local.registry}/app@${container.build.result.image_digest}"
+  image = "${local.registry}/app@${container.build.script.image.stdout.trimspace()}"
   env   = { DB = container.db.address.pg }
   port "http" { container = 8080 }
   ready {
@@ -47,7 +85,7 @@ container "api" {
 }
 
 parallel "project" {
-  for_each = container.build.result.test_projects
+  for_each = container.build.script.projects.output
   min      = 1
   max      = 20
 
@@ -59,7 +97,7 @@ parallel "project" {
     container "test" {
       image = "${local.registry}/dotnet-sdk:8"
       mount "/tests" { from = container.build.files.tests }
-      input = { project = project.value, index = project.index }
+      stdin = jsonencode({ project = project.value, index = project.index, version = container.version.output })
       env = {
         API_URL = container.api.url.http
         LABEL   = local.label
@@ -100,4 +138,5 @@ container "report" {
     XS    = jsonencode([for i in range(3) : i * 2])
   }
   script = "trx-merge /results/*/*.trx"
+  output = { exit = self.exit_code, warnings = [for l in self.stderr.lines() : l if l.startswith("warn")] }
 }

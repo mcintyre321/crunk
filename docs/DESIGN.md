@@ -10,12 +10,16 @@ This document records the **locked design**. `docs/LANGUAGE.md` is the language 
 
 - **Pipeline HCL is untrusted.** Any developer, on any branch, can write it.
 - **Repository contents are untrusted:** file names, symlinks, sizes and contents.
-- **Everything that comes back from a session is untrusted:** logs, archives, result files and file listings.
+- **Everything that comes back from a session is untrusted:** logs, captured stdout/stderr, archives and file listings.
 - **The interpreter is trusted.** It evaluates HCL and dispatches containers; user code runs
   only inside containers on sessions.
-- **Only data in a closed schema crosses into the interpreter.** That data is: `result.json`
-  (a JSON object, size-capped, optionally schema-checked), snapshot listings (validated paths),
-  and snapshot file contents read through `file()` (size-capped UTF-8).
+- **Only data in a closed schema crosses into the interpreter.** That data is:
+  - captured script stdout/stderr (size-capped UTF-8, and only for streams a pipeline references)
+  - exit codes
+  - snapshot listings (validated paths)
+  - snapshot file contents read through `file()` (size-capped UTF-8)
+
+  The interpreter parses them only with the pipeline's own functions, under limits.
 - **Platform limits come from a platform config file passed by flag, never from the repository.**
   They cover allowed registries, size classes, timeouts, caps on keys, containers, hosts,
   rounds and file sizes.
@@ -24,11 +28,13 @@ This document records the **locked design**. `docs/LANGUAGE.md` is the language 
 
 ## Primitives
 
-- **container**: the only thing that runs.
+- **container**: the only thing that runs. It holds one or more **scripts**, a small DAG of
+  processes sharing the container's filesystem.
 - **Bindings** are the only connections between containers:
   - network: `.url`/`.address`
   - files: `files` snapshots, consumed by `mount`
-  - data: `input` in, `result` out
+  - data: script `stdin` in; `stdout`, `stderr` and `exit_code` out, parsed by functions
+    (once, into `output`)
 
   Referencing a binding creates a dependency edge.
 - **parallel**: repeats what it contains (`count` or `for_each`). It nests, and scoping
@@ -36,7 +42,8 @@ This document records the **locked design**. `docs/LANGUAGE.md` is the language 
 - **host**: a logical isolation unit, with its own network and volume namespace.
 - **snapshot**: an immutable, content-addressed directory tree, which can be queried with
   `glob`/`subdir`/`file`.
-- **schema**: an HCL type or a JSON Schema, applied with `conform()` and `result_schema`.
+- **schema**: an HCL type or a JSON Schema, applied with `conform()`, typically in a script's `output`.
+- **functions**: pure and deterministic, and callable as methods (`x.f(y)` is `f(x, y)`).
 
 ## Execution model
 
@@ -83,7 +90,7 @@ always sound.
   - its instance address
   - its spec hash
   - its exit status
-  - its result digest
+  - the digests of its scripts' captured streams and exit codes
   - its snapshot digests
 - **Resume** is replay. Evaluation is a pure function of the HCL, the variables and the journal,
   so a restarted engine re-evaluates and skips completed work. Held-alive containers are never
@@ -93,10 +100,10 @@ always sound.
   - its canonical spec
   - its image digest
   - the digests of its mounted snapshots
-  - its input JSON
+  - its scripts' stdin
   - the source commit
 
-  A previous success with the same hash is reused, both its result and its snapshots.
+  A previous success with the same hash is reused, both its script outputs and its snapshots.
   Held-alive containers are never cached.
 
 ### Hosts, sessions and scheduling
@@ -128,8 +135,10 @@ always sound.
   - the logical host's network only
   - resource limits from the size class
   - no host bind mounts
-- **Inputs and results:** `/run/input.json` is written before start. `/run/result.json` is
-  read after exit and validated.
+- **Scripts:** the container starts with a platform-owned idle process (never the pipeline's
+  choice). Each script runs with `exec`, with `stdin` attached. Its stdout and stderr are
+  streamed to the log and captured (capped) when referenced. Between scripts the evaluator runs
+  again, because a script's `stdin` can depend on an earlier script's output.
 - **Snapshots** sit behind a `Snapshotter` interface (`Capture`, `Materialise`, listing, and a
   bounded file read). The first implementation streams tar through the Engine API. Archive
   extraction rejects absolute paths, `..`, links that escape the root and device files, and
@@ -139,6 +148,7 @@ always sound.
 
 ```
 cmd/crunk          CLI: `crunk validate --root <repo> [--dir <pipeline dir>]`
+internal/hclsyntax Fork of HCL's parser, adding method-call syntax (see its README)
 internal/lang      Loading and static validation of pipeline HCL
   load.go          root-confined module loader, limits, structural checks
   schema.go        the vocabulary: blocks, arguments, nesting, removed-construct messages
@@ -169,16 +179,19 @@ testdata/          malicious corpus (must be rejected) and a valid pipeline that
 
 crunk is licensed under **MPL-2.0** (see `LICENSE`).
 
-- **All code in this repository is original to crunk.** The project began as a fork of
-  togomak; Phase 1 deleted all of togomak's code, and nothing from it is reused.
+- **All code in this repository is original to crunk,** except the borrowed files listed below.
+  The project began as a fork of togomak; Phase 1 deleted all of togomak's code, and nothing
+  from it is reused.
 - **Libraries:** `github.com/hashicorp/hcl/v2` (MPL-2.0) and `github.com/zclconf/go-cty`
   (MIT) are used as dependencies. `github.com/alessio/shellescape` is MIT.
-- **OpenTofu (MPL-2.0)** is the reference for semantics and the only permitted source of
-  borrowed code, such as type-constraint handling or DAG walking. A borrowed file keeps its
-  MPL-2.0 header and is listed here.
+- **Borrowed code** may come only from MPL-2.0 HashiCorp libraries we already depend on (`hcl`)
+  and from OpenTofu (MPL-2.0), which is also the reference for semantics. A borrowed file keeps
+  its MPL-2.0 header, says if it was modified, and is listed here.
 - **No code from Terraform 1.6 or later (BUSL-1.1).**
 
-Borrowed files: none so far.
+Borrowed files:
+- `internal/hclsyntax/`: `github.com/hashicorp/hcl/v2/hclsyntax` v2.17.0, modified for method-call
+  syntax (`parser.go`, `expression.go`).
 
 ## Roadmap
 

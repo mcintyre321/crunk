@@ -10,8 +10,8 @@ func TestLoadValidPipeline(t *testing.T) {
 		t.Fatal(diags.Error())
 	}
 	root := p.Module.Root
-	if got := len(root.Containers); got != 4 {
-		t.Errorf("top-level containers: got %d, want 4 (build, db, api, report)", got)
+	if got := len(root.Containers); got != 5 {
+		t.Errorf("top-level containers: got %d, want 5 (build, version, db, api, report)", got)
 	}
 	if db := root.container("db"); db == nil || db.Host == nil || db.Host.Labels[0] != "services" {
 		t.Errorf("db should be in scope at the top level and placed on host services")

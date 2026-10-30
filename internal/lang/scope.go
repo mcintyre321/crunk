@@ -5,7 +5,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/mcintyre321/crunk/internal/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -134,7 +134,7 @@ var BuiltinContainers = map[string]bool{"source": true}
 // block's name becomes an expression root (`shard.index`).
 var reservedNames = map[string]bool{
 	"var": true, "local": true, "container": true, "parallel": true, "module": true,
-	"schema": true, "host": true, "each": true, "self": true, "count": true,
+	"schema": true, "host": true, "each": true, "self": true, "count": true, "script": true,
 }
 
 // collect checks one file's top-level body against the schema and adds its blocks to mod.
@@ -243,11 +243,22 @@ func checkContainer(b *hclsyntax.Block) hcl.Diagnostics {
 			}
 			seen[key] = true
 		}
+		if inner.Type == "script" && len(inner.Labels) == 1 && inner.Labels[0] == "" {
+			diags = diags.Extend(errorf(inner.LabelRanges[0].Ptr(), "Invalid name", "script names cannot be empty"))
+		}
 		if inner.Type == "ready" {
 			_, tcp := inner.Body.Attributes["tcp"]
 			http := len(inner.Body.Blocks) > 0
 			if tcp == http {
 				diags = diags.Extend(errorf(inner.DefRange().Ptr(), "Invalid ready probe", "`ready` needs exactly one of `tcp` or an `http` block"))
+			}
+		}
+	}
+	if hasScriptBlocks(&Container{Block: b}) {
+		for _, attr := range []string{"script", "stdin", "output"} {
+			if a, ok := b.Body.Attributes[attr]; ok {
+				r := a.NameRange
+				diags = diags.Extend(errorf(&r, "Conflicting arguments", "`%s` on the container is shorthand for a single script; with `script` blocks, put it inside a script block instead", attr))
 			}
 		}
 	}

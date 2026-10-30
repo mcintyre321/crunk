@@ -2,9 +2,10 @@ package lang
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/mcintyre321/crunk/internal/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -86,29 +87,112 @@ func checkScopeRefs(mod *Module, s *Scope) hcl.Diagnostics {
 
 func checkContainerRefs(ctx refContext, c *Container) hcl.Diagnostics {
 	var diags hcl.Diagnostics
+	ctx.container = c
 	for _, a := range sortedAttrs(c.Block.Body) {
 		switch a.Name {
 		case "depends_on":
-			bare := ctx
-			bare.allowBare = true
-			diags = diags.Extend(checkExpr(a.Expr, bare))
-			diags = diags.Extend(checkDependsOn(a.Expr))
-		case "result_schema":
-			diags = diags.Extend(checkExpr(a.Expr, ctx))
-			if root, steps, _, ok := flatten(a.Expr); !ok || root != "schema" || len(steps) != 1 {
-				r := a.Expr.Range()
-				diags = diags.Extend(errorf(&r, "Invalid result_schema", "`result_schema` must be a reference to a schema, such as `schema.build_result`"))
-			}
+			diags = diags.Extend(checkDependsOnAttr(ctx, a.Expr))
+		case "output":
+			self := ctx
+			self.selfAllowed = true
+			diags = diags.Extend(checkExpr(a.Expr, self))
 		default:
 			diags = diags.Extend(checkExpr(a.Expr, ctx))
 		}
 	}
 	for _, b := range c.Block.Body.Blocks {
+		if b.Type == "script" {
+			diags = diags.Extend(checkScriptRefs(ctx, b))
+			continue
+		}
 		diags = diags.Extend(checkBlockExprs(ctx, b))
 		if b.Type == "mount" {
 			if from, ok := b.Body.Attributes["from"]; ok {
 				diags = diags.Extend(checkMountFrom(from.Expr))
 			}
+		}
+	}
+	diags = diags.Extend(checkScriptCycles(c))
+	return diags
+}
+
+func checkScriptRefs(ctx refContext, b *hclsyntax.Block) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	ctx.inScript = true
+	for _, a := range sortedAttrs(b.Body) {
+		switch a.Name {
+		case "depends_on":
+			diags = diags.Extend(checkDependsOnAttr(ctx, a.Expr))
+		case "output":
+			self := ctx
+			self.selfAllowed = true
+			diags = diags.Extend(checkExpr(a.Expr, self))
+		default:
+			diags = diags.Extend(checkExpr(a.Expr, ctx))
+		}
+	}
+	return diags
+}
+
+func checkDependsOnAttr(ctx refContext, expr hclsyntax.Expression) hcl.Diagnostics {
+	ctx.allowBare = true
+	return checkExpr(expr, ctx).Extend(checkDependsOn(expr))
+}
+
+// checkScriptCycles reports cycles among a container's scripts, through
+// references and depends_on.
+func checkScriptCycles(c *Container) hcl.Diagnostics {
+	edges := map[string][]string{}
+	blocks := map[string]*hclsyntax.Block{}
+	var order []string
+	for _, b := range c.Block.Body.Blocks {
+		if b.Type != "script" || len(b.Labels) != 1 {
+			continue
+		}
+		name := b.Labels[0]
+		blocks[name] = b
+		order = append(order, name)
+		for _, a := range b.Body.Attributes {
+			for _, t := range a.Expr.Variables() {
+				if t.RootName() != "script" || len(t) < 2 {
+					continue
+				}
+				if attr, ok := t[1].(hcl.TraverseAttr); ok {
+					edges[name] = append(edges[name], attr.Name)
+				}
+			}
+		}
+	}
+	const (
+		unvisited = iota
+		visiting
+		done
+	)
+	state := map[string]int{}
+	var diags hcl.Diagnostics
+	var visit func(name string, path []string) bool
+	visit = func(name string, path []string) bool {
+		switch state[name] {
+		case visiting:
+			cycle := append(path, name)
+			r := blocks[name].DefRange()
+			diags = diags.Extend(errorf(&r, "Script cycle", "scripts depend on each other in a cycle: %s", strings.Join(cycle, " → ")))
+			return true
+		case done:
+			return false
+		}
+		state[name] = visiting
+		for _, dep := range edges[name] {
+			if _, ok := blocks[dep]; ok && visit(dep, append(path, name)) {
+				return true
+			}
+		}
+		state[name] = done
+		return false
+	}
+	for _, name := range order {
+		if state[name] == unvisited && visit(name, nil) {
+			break
 		}
 	}
 	return diags
@@ -136,9 +220,9 @@ func checkDependsOn(expr hclsyntax.Expression) hcl.Diagnostics {
 	for _, e := range tuple.Exprs {
 		root, steps, _, ok := flatten(e)
 		path := append([]step{{name: root}}, steps...)
-		if !ok || len(path) < 2 || path[len(path)-2].name != "container" {
+		if !ok || len(path) < 2 || (path[len(path)-2].name != "container" && path[len(path)-2].name != "script") {
 			er := e.Range()
-			diags = diags.Extend(errorf(&er, "Invalid depends_on", "each `depends_on` entry must refer to a container, such as `container.build` or `parallel.shard[*].container.test`"))
+			diags = diags.Extend(errorf(&er, "Invalid depends_on", "each `depends_on` entry must refer to a container or script, such as `container.build`, `script.restore` or `parallel.shard[*].container.test`"))
 		}
 	}
 	return diags
@@ -158,9 +242,12 @@ func checkMountFrom(expr hclsyntax.Expression) hcl.Diagnostics {
 }
 
 type refContext struct {
-	mod       *Module
-	scope     *Scope // nil where nothing may be referenced (variable defaults)
-	allowBare bool   // a bare container reference is allowed (depends_on)
+	mod         *Module
+	scope       *Scope     // nil where nothing may be referenced (variable defaults)
+	container   *Container // the container being checked, if any
+	inScript    bool       // inside a script block: sibling scripts may be referenced
+	selfAllowed bool       // inside `output`: self.stdout and friends are available
+	allowBare   bool       // a bare container or script reference is allowed (depends_on)
 }
 
 // checkExpr rejects calls to functions outside the allowlist and references
@@ -261,6 +348,29 @@ func (c *refChecker) checkRef(root string, r hcl.Range, steps []step) {
 		return
 	}
 	switch root {
+	case "self":
+		if !c.ctx.selfAllowed {
+			c.errorf(r, "Invalid reference", "`self` is only available in `output`, where it refers to the script that just finished")
+			return
+		}
+		c.checkStream(r, "self", steps, false)
+	case "script":
+		if !c.ctx.inScript {
+			c.errorf(r, "Invalid reference", "`script.<name>` can only be used by another script in the same container; elsewhere use `container.<name>.script.<name>`")
+			return
+		}
+		if len(steps) == 0 || steps[0].name == "" {
+			c.errorf(r, "Invalid reference", "`script` must be followed by a name")
+			return
+		}
+		if !hasScript(c.ctx.container, steps[0].name) {
+			c.errorf(r, "Unknown reference", "container %q has no script named %q", c.ctx.container.Name(), steps[0].name)
+			return
+		}
+		if len(steps) == 1 && c.ctx.allowBare {
+			return
+		}
+		c.checkStream(r, "script."+steps[0].name, steps[1:], true)
 	case "var", "schema":
 		if len(steps) == 0 || steps[0].name == "" {
 			c.errorf(r, "Invalid reference", "`%s` must be followed by a name, such as `%s.example`", root, root)
@@ -380,7 +490,7 @@ func (c *refChecker) checkInner(r hcl.Range, search []*Scope, steps []step) {
 func (c *refChecker) checkContainerTail(r hcl.Range, ct *Container, name string, steps []step) {
 	if len(steps) == 0 {
 		if !c.ctx.allowBare {
-			c.errorf(r, "Invalid reference", "refer to `.url`, `.address`, `.files` or `.result` of container %q", name)
+			c.errorf(r, "Invalid reference", "refer to `.url`, `.address`, `.files`, `.stdout`, `.output` or a script of container %q", name)
 		}
 		return
 	}
@@ -393,8 +503,22 @@ func (c *refChecker) checkContainerTail(r hcl.Range, ct *Container, name string,
 		return
 	}
 	switch attr {
-	case "result":
-		return
+	case "script":
+		if len(steps) < 2 || steps[1].name == "" {
+			c.errorf(r, "Invalid reference", "`script` must be followed by a script name")
+			return
+		}
+		if !hasScript(ct, steps[1].name) {
+			c.errorf(r, "Unknown reference", "container %q has no script named %q", name, steps[1].name)
+			return
+		}
+		c.checkStream(r, "container."+name+".script."+steps[1].name, steps[2:], true)
+	case "stdout", "stderr", "exit_code", "output":
+		if hasScriptBlocks(ct) {
+			c.errorf(r, "Invalid reference", "container %q has named scripts; use `container.%s.script.<name>.%s`", name, name, attr)
+			return
+		}
+		c.checkStream(r, "container."+name, steps, true)
 	case "url", "address", "files":
 		blockType := map[string]string{"url": "port", "address": "port", "files": "files"}[attr]
 		if len(steps) < 2 || steps[1].name == "" {
@@ -411,8 +535,57 @@ func (c *refChecker) checkContainerTail(r hcl.Range, ct *Container, name string,
 		}
 		c.errorf(r, "Unknown reference", "container %q has no %s named %q", name, blockType, steps[1].name)
 	default:
-		c.errorf(r, "Invalid reference", "containers provide `url`, `address`, `files` and `result`, not `%s`", attr)
+		c.errorf(r, "Invalid reference", "containers provide `url`, `address`, `files`, `script`, `stdout`, `stderr`, `exit_code` and `output`, not `%s`", attr)
 	}
+}
+
+// checkStream checks what follows a script: stdout, stderr, exit_code or (when
+// allowed) output. Only output may be indexed further.
+func (c *refChecker) checkStream(r hcl.Range, what string, steps []step, outputAllowed bool) {
+	fields := "`stdout`, `stderr` or `exit_code`"
+	if outputAllowed {
+		fields = "`stdout`, `stderr`, `exit_code` or `output`"
+	}
+	if len(steps) == 0 {
+		c.errorf(r, "Invalid reference", "refer to %s of `%s`", fields, what)
+		return
+	}
+	switch steps[0].name {
+	case "output":
+		if outputAllowed {
+			return
+		}
+	case "stdout", "stderr", "exit_code":
+		if len(steps) == 1 {
+			return
+		}
+		c.errorf(r, "Invalid reference", "`%s.%s` is a single value; use functions to take it apart, such as `.lines()` or `.jsondecode()`", what, steps[0].name)
+		return
+	}
+	c.errorf(r, "Invalid reference", "refer to %s of `%s`, not `%s`", fields, what, steps[0].name)
+}
+
+func hasScriptBlocks(ct *Container) bool {
+	for _, b := range ct.Block.Body.Blocks {
+		if b.Type == "script" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasScript reports whether ct has a script named name. A container without
+// script blocks has one script, "main" (its `script` shorthand or default command).
+func hasScript(ct *Container, name string) bool {
+	if !hasScriptBlocks(ct) {
+		return name == "main"
+	}
+	for _, b := range ct.Block.Body.Blocks {
+		if b.Type == "script" && len(b.Labels) == 1 && b.Labels[0] == name {
+			return true
+		}
+	}
+	return false
 }
 
 // hiddenHint suggests the explicit form when name exists inside a parallel block

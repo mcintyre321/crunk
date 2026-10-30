@@ -16,7 +16,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/mcintyre321/crunk/internal/hclsyntax"
 )
 
 // Limits bound the work Load will do on untrusted input.

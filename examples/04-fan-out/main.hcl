@@ -10,8 +10,8 @@ parallel "greeting" {
   host "worker" {
     container "say" {
       image  = "docker.io/library/alpine:3.20"
-      input  = { word = greeting.value, position = greeting.index }
-      script = "cat /run/input.json"
+      stdin  = jsonencode({ word = greeting.value, position = greeting.index })
+      script = "cat"
     }
   }
 }

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/mcintyre321/crunk/internal/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -23,6 +23,11 @@ func eval(t *testing.T, src string) (cty.Value, hcl.Diagnostics) {
 
 func TestFunctions(t *testing.T) {
 	cases := map[string]cty.Value{
+		`lines("a\nb\n")`:                  cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")}),
+		`lines("a\r\nb")`:                  cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")}),
+		`lines("")`:                        cty.ListValEmpty(cty.String),
+		`"x\ny".lines().length()`:          cty.NumberIntVal(2),
+		`" A ".trimspace().lower()`:        cty.StringVal("a"),
 		`length("héllo")`:                  cty.NumberIntVal(5),
 		`length([1, 2, 3])`:                cty.NumberIntVal(3),
 		`length({ a = 1 })`:                cty.NumberIntVal(1),

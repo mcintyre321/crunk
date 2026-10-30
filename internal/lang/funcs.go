@@ -30,6 +30,7 @@ var Functions = map[string]function.Function{
 	"format":      stdlib.FormatFunc,
 	"indent":      stdlib.IndentFunc,
 	"join":        stdlib.JoinFunc,
+	"lines":       LinesFunc,
 	"lower":       stdlib.LowerFunc,
 	"regex":       stdlib.RegexFunc,
 	"regexall":    stdlib.RegexAllFunc,
@@ -151,6 +152,24 @@ var StrContainsFunc = function.New(&function.Spec{
 	Type: function.StaticReturnType(cty.Bool),
 	Impl: func(args []cty.Value, _ cty.Type) (cty.Value, error) {
 		return cty.BoolVal(strings.Contains(args[0].AsString(), args[1].AsString())), nil
+	},
+})
+
+// LinesFunc splits text into lines. It accepts \n or \r\n line endings and
+// ignores a final line ending, so "a\nb\n" gives ["a", "b"] and "" gives [].
+var LinesFunc = function.New(&function.Spec{
+	Params: []function.Parameter{{Name: "str", Type: cty.String}},
+	Type:   function.StaticReturnType(cty.List(cty.String)),
+	Impl: func(args []cty.Value, _ cty.Type) (cty.Value, error) {
+		text := strings.TrimSuffix(strings.ReplaceAll(args[0].AsString(), "\r\n", "\n"), "\n")
+		if text == "" {
+			return cty.ListValEmpty(cty.String), nil
+		}
+		var vals []cty.Value
+		for _, line := range strings.Split(text, "\n") {
+			vals = append(vals, cty.StringVal(line))
+		}
+		return cty.ListVal(vals), nil
 	},
 })
 
